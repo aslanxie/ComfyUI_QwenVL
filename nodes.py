@@ -2,6 +2,7 @@ import os
 import torch
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
+    Qwen3VLForConditionalGeneration,
     AutoModelForCausalLM,
     AutoTokenizer,
     AutoProcessor,
@@ -45,6 +46,8 @@ class Qwen2VL:
                     [
                         "Qwen2.5-VL-3B-Instruct",
                         "Qwen2.5-VL-7B-Instruct",
+                        "Qwen3-VL-4B-Thinking",
+                        "Qwen3-VL-8B-Thinking",
                         "SkyCaptioner-V1",
                     ],
                     {"default": "Qwen2.5-VL-3B-Instruct"},
@@ -89,7 +92,9 @@ class Qwen2VL:
         if seed != -1:
             torch.manual_seed(seed)
 
-        if model.startswith("Qwen"):
+        if model.startswith("Qwen3"):
+            model_id = f"Qwen/{model}"
+        elif model.startswith("Qwen2"):
             model_id = f"qwen/{model}"
         else:
             model_id = f"Skywork/{model}"
@@ -133,12 +138,21 @@ class Qwen2VL:
             else:
                 quantization_config = None
 
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                self.model_checkpoint,
-                torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
-                device_map="auto",
-                quantization_config=quantization_config,
-            )
+            # Choose the appropriate model class based on the model family
+            if model.startswith("Qwen3"):
+                self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+                    self.model_checkpoint,
+                    torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+                    device_map="auto",
+                    quantization_config=quantization_config,
+                )
+            else:
+                self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    self.model_checkpoint,
+                    torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
+                    device_map="auto",
+                    quantization_config=quantization_config,
+                )
 
         with torch.no_grad():
             messages = [
