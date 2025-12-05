@@ -21,6 +21,16 @@ try:
     import comfy.model_management as comfy_mm
 except ImportError:  # ComfyUI runtime not available during development/tests
     comfy_mm = None
+    
+hpu_available=False
+try:
+    import habana_frameworks.torch.core as htcore
+    import habana_frameworks.torch.hpu as hthpu
+    hpu_available =  hthpu.is_available()
+except:
+    hpu_available = hpu_available or (hasattr(torch, "hpu") and torch.hpu.is_available())
+
+print(f"hpu_availabl: {hpu_available}")
 
 
 def _maybe_move_to_cpu(module):
@@ -30,6 +40,7 @@ def _maybe_move_to_cpu(module):
         module.to("cpu")
     except Exception:
         pass
+
 
 
 def _clear_cuda_memory():
@@ -285,18 +296,20 @@ class Qwen:
         self.tokenizer = None
         self.model = None
         self.device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+            torch.device("hpu") if torch.hpu.is_available() else torch.device("cpu")
         )
-        self.bf16_support = (
-            torch.cuda.is_available()
-            and torch.cuda.get_device_capability(self.device)[0] >= 8
-        )
+        #self.bf16_support = (
+        #    torch.cuda.is_available()
+        #    and torch.cuda.get_device_capability(self.device)[0] >= 8
+        #)
+        self.bf16_support = True
+        print(f"device {self.device}")
 
     def _unload_resources(self):
         _maybe_move_to_cpu(self.model)
         self.model = None
         self.tokenizer = None
-        _clear_cuda_memory()
+        #_clear_cuda_memory()
 
     @classmethod
     def INPUT_TYPES(s):
@@ -353,6 +366,7 @@ class Qwen:
         max_new_tokens,
         seed,
     ):
+        print(f"Running to Qwen inference")
         if not prompt.strip() and not system.strip():
             return ("Error: Both system and prompt are empty.",)
 
@@ -407,7 +421,7 @@ class Qwen:
                     messages, tokenize=False, add_generation_prompt=True
                 )
 
-                inputs = self.tokenizer([text], return_tensors="pt").to("cuda")
+                inputs = self.tokenizer([text], return_tensors="pt").to("hpu")
 
                 generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
                 generated_ids_trimmed = [
