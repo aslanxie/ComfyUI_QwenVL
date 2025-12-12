@@ -1,4 +1,5 @@
 import os
+import time
 import gc
 import inspect
 import torch
@@ -24,7 +25,7 @@ except ImportError:  # ComfyUI runtime not available during development/tests
     
 hpu_available=False
 try:
-    import habana_frameworks.torch.core as htcore
+    import habana_frameworks.torch as htorch
     import habana_frameworks.torch.hpu as hthpu
     hpu_available =  hthpu.is_available()
 except:
@@ -303,7 +304,7 @@ class Qwen:
         #    and torch.cuda.get_device_capability(self.device)[0] >= 8
         #)
         self.bf16_support = True
-        print(f"device {self.device}")
+        print(f"[Qwen] Device: {self.device}")
 
     def _unload_resources(self):
         _maybe_move_to_cpu(self.model)
@@ -367,6 +368,9 @@ class Qwen:
         seed,
     ):
         print(f"Running to Qwen inference")
+        print(f"system: {system}")
+        print(f"prompt: {prompt}")
+        t0 = time.time()
         if not prompt.strip() and not system.strip():
             return ("Error: Both system and prompt are empty.",)
 
@@ -387,28 +391,29 @@ class Qwen:
             )
 
         if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_checkpoint)
-
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_checkpoint,
+                #trust_remote_code=True,
+                #padding_side="left",           # important for Gaudi
+            )
+            #if self.tokenizer.pad_token is None:
+            #    self.tokenizer.pad_token = self.tokenizer.eos_token
         if self.model is None:
-            # Load the model on the available device(s)
-            if quantization == "4bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                )
-            elif quantization == "8bit":
-                quantization_config = BitsAndBytesConfig(
-                    load_in_8bit=True,
-                )
-            else:
-                quantization_config = None
-
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_checkpoint,
-                torch_dtype=torch.bfloat16 if self.bf16_support else torch.float16,
-                device_map="auto",
-                quantization_config=quantization_config,
+                dtype=torch.bfloat16,
+                device_map="hpu",
+                #trust_remote_code=True,
             )
-
+                
+            try:
+                self.model = torch.compile(
+                    self.model,
+                    backend="hpu_backend",
+                )
+            except:
+                pass  # older PyTorch → skip silently
+        t1 = time.time()
         result = None
         with torch.no_grad():
             messages = [
@@ -422,12 +427,17 @@ class Qwen:
                 )
 
                 inputs = self.tokenizer([text], return_tensors="pt").to("hpu")
+                print(f"inputs id len: {len(inputs['input_ids'][0])}")
 
-                generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+                generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                                    pad_token_id=self.tokenizer.eos_token_id,
+                                                    use_cache=True,)
                 generated_ids_trimmed = [
                     out_ids[len(in_ids) :]
                     for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
                 ]
+                print(f"generated id len: {len(generated_ids_trimmed[0])}")
+                
                 result = self.tokenizer.batch_decode(
                     generated_ids_trimmed,
                     skip_special_tokens=True,
@@ -440,4 +450,7 @@ class Qwen:
                 if not keep_model_loaded:
                     self._unload_resources()
 
-            return result
+        t2 = time.time()
+        print(f"result: {result}")
+        print(f"load model {(t1-t0):.4f}s, inference {(t2-t1):.4f}s")
+        return result
